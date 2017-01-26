@@ -9,12 +9,10 @@
 
 
 import array
-import asyncio
 import inspect
 import logging
 import sys
 from collections import Container, Mapping
-
 
 class LoggedClass(object):
 
@@ -202,3 +200,7 @@ def open_file(filename, create=False):
         if create:
             return open(filename, 'wb+')
         raise
+
+def open_truncate(filename):
+    '''Open the file name.  Return its handle.'''
+    return open(filename, 'wb+')
