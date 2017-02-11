@@ -10,6 +10,7 @@
 
 import array
 import inspect
+from ipaddress import ip_address
 import logging
 import sys
 from collections import Container, Mapping
@@ -204,3 +205,16 @@ def open_file(filename, create=False):
 def open_truncate(filename):
     '''Open the file name.  Return its handle.'''
     return open(filename, 'wb+')
+
+
+def host_port_string(host, port):
+    '''Return a correctly formatted host and port as a string.'''
+    fmt = '{}:{:d}'
+    try:
+        host = ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if host.version == 6:
+            fmt = '[{}]:{:d}'
+    return fmt.format(host, port)

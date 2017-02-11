@@ -17,6 +17,7 @@ from functools import partial
 
 from lib.jsonrpc import JSONSession
 from lib.peer import Peer
+from lib.socks import SocksProxy
 import lib.util as util
 from server.irc import IRC
 import server.version as version
@@ -58,6 +59,7 @@ class PeerSession(JSONSession):
         self.peer = peer
         self.peer_mgr = peer_mgr
         self.kind = kind
+        self.failed = False
 
     def have_pending_items(self):
         self.peer_mgr.ensure_future(self.process_pending_items())
@@ -68,7 +70,7 @@ class PeerSession(JSONSession):
         self.log_prefix = '[{}] '.format(str(self.peer)[:25])
 
         # Update IP address
-        if not self.peer.host.endswith('.onion'):
+        if not self.peer.is_tor:
             peer_info = self.peer_info()
             if peer_info:
                 self.peer.ip_addr = peer_info[0]
@@ -96,6 +98,7 @@ class PeerSession(JSONSession):
     def on_peers_subscribe(self, result, error):
         '''Handle the response to the peers.subcribe message.'''
         if error:
+            self.failed = True
             self.log_error('server.peers.subscribe: {}'.format(error))
         else:
             self.peer_mgr.add_session_peers(self, result)
@@ -110,6 +113,7 @@ class PeerSession(JSONSession):
     def on_version(self, result, error):
         '''Handle the response to the version message.'''
         if error:
+            self.failed = True
             self.log_error('server.version: {}'.format(error))
         elif isinstance(result, str):
             self.peer.server_version = result
@@ -119,9 +123,10 @@ class PeerSession(JSONSession):
     def close_if_done(self):
         if not self.has_pending_requests():
             self.peer.last_connect = time.time()
-            self.peer.try_count = 0
-            self.peer.source = 'peer'
-            self.peer_mgr.verified_connection(self)
+            if not self.failed:
+                self.peer.try_count = 0
+                self.peer.source = 'peer'
+                self.peer_mgr.verified_connection(self)
             self.close_connection()
 
 
@@ -149,6 +154,8 @@ class PeerManager(util.LoggedClass):
         # any other peers with the same host name or IP address.
         self.peers = set()
         self.onion_peers = []
+        self.tor_proxy = SocksProxy(env.tor_proxy_host, env.tor_proxy_port,
+                                    loop=self.loop)
         self.import_peers()
 
     def info(self):
@@ -203,7 +210,8 @@ class PeerManager(util.LoggedClass):
 
     def add_peers(self, peers, limit=3, source=None):
         '''Add peers that are not already present.'''
-        new_peers = [peer for peer in peers if not self.matches(peer)]
+        new_peers = [peer for peer in peers
+                     if peer.is_valid and not self.matches(peer)]
         if new_peers:
             source = source or new_peers[0].source
             if limit:
@@ -220,6 +228,9 @@ class PeerManager(util.LoggedClass):
     def on_add_peer(self, features, source):
         '''Add peers from an incoming connection.'''
         peers = Peer.peers_from_features(features, source)
+        if peers:
+            self.log_info('add_peer request received from {}'
+                          .format(peers[0].host))
         self.add_peers(peers, limit=3)
         return bool(peers)
 
@@ -232,21 +243,18 @@ class PeerManager(util.LoggedClass):
         '''
         buckets = defaultdict(list)
         cutoff = time.time() - STALE_SECS
-        recent = [peer for peer in self.peers if peer.last_connect > cutoff]
+        recent = [peer for peer in self.peers
+                  if peer.last_connect > cutoff and peer.is_public]
         for peer in recent:
             buckets[peer.bucket()].append(peer)
 
-        #self.logger.info('buckets: {}'.format(buckets))
-
-        onion_peers = buckets.pop('onion', None)
-        if not onion_peers:
-            onion_peers = self.onion_peers
-        random.shuffle(onion_peers)
-
-        # Return one clearnet peer from each bucket and at most 5
-        # onion peers
+        # Return one clearnet peer from each bucket, and no more than
+        # 20% onion peers (but up to 10 is OK anyway)
+        onion_peers = buckets.pop('onion', self.onion_peers)
         peers = [random.choice(bpeers) for bpeers in buckets.values()]
-        peers += onion_peers[:5]
+        max_onion = max(10, len(peers) // 4)
+        random.shuffle(onion_peers)
+        peers += onion_peers[:max_onion]
 
         return [peer.to_tuple() for peer in peers]
 
@@ -365,16 +373,17 @@ class PeerManager(util.LoggedClass):
         # Exponential backoff of retries
         now = time.time()
         retry_cutoff = (now - STALE_SECS) + WAKEUP_SECS * 2
+
         peers = [peer for peer in self.peers
                  if peer.last_connect < retry_cutoff
                  and peer.last_try < now - WAKEUP_SECS * 2 ** peer.try_count]
+
         for peer in peers:
             await self.semaphore.acquire()
             self.retry_peer(peer)
 
     def retry_peer(self, peer):
-        # First connect via SSL if available
-        if peer.ssl_port:
+        if peer.ssl_port and not peer.is_tor:
             port = peer.ssl_port
             kind = 'SSL'
             # Python 3.5.3: use PROTOCOL_TLS
@@ -382,13 +391,22 @@ class PeerManager(util.LoggedClass):
         else:
             kind = 'TCP'
             port = peer.tcp_port
+            if not port:
+                return
             sslc = None
-        assert port
+
         peer.last_try = time.time()
         peer.try_count += 1
+
+        if peer.is_tor:
+            if self.tor_proxy.is_down():
+                return
+            create_connection = self.tor_proxy.create_connection
+        else:
+            create_connection = self.loop.create_connection
+
         protocol_factory = partial(PeerSession, peer, self, kind)
-        coro = self.loop.create_connection(protocol_factory, peer.host,
-                                           port, ssl=sslc)
+        coro = create_connection(protocol_factory, peer.host, port, ssl=sslc)
         self.ensure_future(coro, partial(self.on_create_connection, peer))
 
     def on_create_connection(self, peer, future):
@@ -401,7 +419,8 @@ class PeerManager(util.LoggedClass):
             pass
         else:
             if exception:
-                self.logger.info('failed connecting to {}'.format(peer))
+                self.logger.info('failed connecting to {}: {}'
+                                 .format(peer, exception))
                 self.semaphore.release()
 
     def connection_lost(self, session):
@@ -410,7 +429,11 @@ class PeerManager(util.LoggedClass):
 
     def verified_connection(self, session):
         '''Called by the peer session if a connection was verified.'''
-        self.remove_matches(session.peer)
-        ip_addr = session.peer.ip_addr if session.peer.ip_addr else 'unknown'
-        self.log_info('peer {} verified via {} at {}'
-                      .format(session.peer, session.kind, ip_addr))
+        peer = session.peer
+        self.remove_matches(peer)
+        if peer.is_tor:
+            self.log_info('peer {} verified via {} over Tor'
+                          .format(peer, session.kind))
+        else:
+            self.log_info('peer {} verified via {} at {}'
+                          .format(peer, session.kind, peer.ip_addr))

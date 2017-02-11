@@ -208,6 +208,31 @@ below are low and encourage you to raise them.
   every 60 seconds, and servers doing peer discovery roughly every 300
   seconds.
 
+TOR
+---
+
+In response to the `server.peers.subscribe` RPC call, ElectrumX will
+only return peer servers that is has recently connected to and
+verified basic functionality.
+
+If you are not running a Tor proxy ElectrumX will be unable to connect
+to onion server peers, in which case rather than returning no onion
+peers it will fall back to a hard-coded list.
+
+To give incoming clients a full range of onion servers you will need
+to be running a Tor proxy for ElectrumX to use.
+
+* **TOR_PROXY_HOST**
+
+  The host where the Tor proxy is running.  Defaults to *localhost*.
+
+* **TOR_PROXY_PORT**
+
+  The port on which the Tor proxy is running.  If not set, ElectrumX
+  will autodetect any proxy running on the usual ports 9050 (Tor),
+  9150 (Tor browser bundle) and 1080 (socks).
+
+
 IRC
 ---
 

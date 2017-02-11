@@ -285,17 +285,18 @@ class Bitcoin(Coin):
     IRC_CHANNEL = "#electrum"
     RPC_PORT = 8332
     PEERS = [
-        '4cii7ryno5j3axe4.onion t'
         'btc.smsys.me s995',
         'ca6ulp2j2mpsft3y.onion s t',
         'electrum.be s t',
-        'electrum.trouth.net s t',
+        'electrum.trouth.net p10000 s t',
         'electrum.vom-stausee.de s t',
-        'electrum3.hachre.de s t',
+        'electrum3.hachre.de p10000 s t',
         'electrum.hsmiths.com s t',
         'erbium1.sytes.net s t',
-        'h.1209k.com s t',
+        'fdkbwjykvl2f3hup.onion p10000 s t',
+        'h.1209k.com p10000 s t',
         'helicarrier.bauerj.eu s t',
+        'hsmiths4fyqlw5xw.onion s t',
         'ozahtqwp25chjdjd.onion s t',
         'us11.einfachmalnettsein.de s t',
     ]

@@ -24,6 +24,7 @@
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 import re
+from ipaddress import ip_address
 
 from lib.util import cachedproperty
 
@@ -100,8 +101,32 @@ class Peer(object):
         for feature in self.FEATURES:
             setattr(self, feature, getattr(tmp, feature))
 
+    @cachedproperty
+    def is_tor(self):
+        return self.host.endswith('.onion')
+
+    @cachedproperty
+    def is_valid(self):
+        ip = self.ip_address
+        if not ip:
+            return True
+        return not ip.is_multicast and (ip.is_global or ip.is_private)
+
+    @cachedproperty
+    def is_public(self):
+        ip = self.ip_address
+        return self.is_valid and not (ip and ip.is_private)
+
+    @cachedproperty
+    def ip_address(self):
+        '''The host as a python ip_address object, or None.'''
+        try:
+            return ip_address(self.host)
+        except ValueError:
+            return None
+
     def bucket(self):
-        if self.host.endswith('.onion'):
+        if self.is_tor:
             return 'onion'
         if not self.ip_addr:
             return ''

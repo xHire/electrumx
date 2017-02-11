@@ -177,7 +177,6 @@ class ElectrumX(SessionBase):
 
     def add_peer(self, features):
         '''Add a peer.'''
-        self.log_info('add_peer request received')
         if self.peer_added:
             return False
         peer_mgr = self.controller.peer_mgr

@@ -46,6 +46,9 @@ class Env(LoggedClass):
         self.banner_file = self.default('BANNER_FILE', None)
         self.anon_logs = self.default('ANON_LOGS', False)
         self.log_sessions = self.integer('LOG_SESSIONS', 3600)
+        # Tor proxy
+        self.tor_proxy_host = self.default('TOR_PROXY_HOST', 'localhost')
+        self.tor_proxy_port = self.integer('TOR_PROXY_PORT', None)
         # The electrum client takes the empty string as unspecified
         self.donation_address = self.default('DONATION_ADDRESS', '')
         self.db_engine = self.default('DB_ENGINE', 'leveldb')
