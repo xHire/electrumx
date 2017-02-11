@@ -78,12 +78,12 @@ class Env(LoggedClass):
             self.identities.append(NetIdentity(
                 tor_host,
                 self.integer('REPORT_TCP_PORT_TOR',
-                             self.identity.tcp_port
-                             if self.identity.tcp_port else
+                             main_identity.tcp_port
+                             if main_identity.tcp_port else
                              self.tcp_port) or None,
                 self.integer('REPORT_SSL_PORT_TOR',
-                             self.identity.ssl_port
-                             if self.identity.ssl_port else
+                             main_identity.ssl_port
+                             if main_identity.ssl_port else
                              self.ssl_port) or None,
                 '_tor',
             ))
