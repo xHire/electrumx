@@ -215,15 +215,15 @@ class Controller(util.LoggedClass):
     def on_future_done(self, future):
         '''Collect the result of a future after removing it from our set.'''
         callback = self.futures.pop(future)
-        if callback:
-            callback(future)
-        else:
-            try:
+        try:
+            if callback:
+                callback(future)
+            else:
                 future.result()
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                self.log_error(traceback.format_exc())
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            self.log_error(traceback.format_exc())
 
     async def check_request_timeouts(self):
         '''Regularly check pending JSON requests for timeouts.'''

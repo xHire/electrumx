@@ -341,7 +341,7 @@ class PeerManager(util.LoggedClass):
             if peer.last_try > hour_ago and peer.last_connect < forget_time:
                 if peer.try_count >= (10 if peer.last_connect else 5):
                     return True
-            return not peer.tcp_port and not peer.ssl_port
+            return not peer.port_pairs()
 
         peers = [peer for peer in self.peers if is_unreachable(peer)]
         if peers:
@@ -374,7 +374,6 @@ class PeerManager(util.LoggedClass):
         # Exponential backoff of retries
         now = time.time()
         retry_cutoff = (now - STALE_SECS) + WAKEUP_SECS * 2
-
         peers = [peer for peer in self.peers
                  if peer.last_connect < retry_cutoff
                  and peer.last_try < now - WAKEUP_SECS * 2 ** peer.try_count]
@@ -388,20 +387,12 @@ class PeerManager(util.LoggedClass):
 
         for peer in peers:
             await self.semaphore.acquire()
-            self.retry_peer(peer)
+            self.retry_peer(peer, peer.port_pairs())
 
-    def retry_peer(self, peer):
-        if peer.ssl_port:
-            port = peer.ssl_port
-            kind = 'SSL'
-            # Python 3.5.3: use PROTOCOL_TLS
-            sslc = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
-        else:
-            kind = 'TCP'
-            port = peer.tcp_port
-            sslc = None
-
-        assert port
+    def retry_peer(self, peer, port_pairs):
+        kind, port = port_pairs[0]
+        # Python 3.5.3: use PROTOCOL_TLS
+        sslc = ssl.SSLContext(ssl.PROTOCOL_SSLv23) if kind == 'SSL' else None
         peer.last_try = time.time()
         peer.try_count += 1
 
@@ -412,20 +403,24 @@ class PeerManager(util.LoggedClass):
 
         protocol_factory = partial(PeerSession, peer, self, kind)
         coro = create_connection(protocol_factory, peer.host, port, ssl=sslc)
-        self.ensure_future(coro, partial(self.on_create_connection, peer))
+        callback = partial(self.connection_done, peer, port_pairs)
+        self.ensure_future(coro, callback)
 
-    def on_create_connection(self, peer, future):
+    def connection_done(self, peer, port_pairs, future):
         '''Called when a connection attempt succeeds or fails.
 
-        If failed, lot it and release the connection count semaphore.'''
-        try:
-            exception = future.exception()
-        except asyncio.CancelledError:
-            pass
-        else:
-            if exception:
-                self.logger.info('failed connecting to {}: {}'
-                                 .format(peer, exception))
+        If failed, log it and try remaining port pairs.  If none,
+        release the connection count semaphore.
+        '''
+        exception = future.exception()
+        if exception:
+            kind, port = port_pairs[0]
+            self.logger.info('failed connecting to {} at {} port {:d}: {}'
+                             .format(peer, kind, port, exception))
+            port_pairs = port_pairs[1:]
+            if port_pairs:
+                self.retry_peer(peer, port_pairs)
+            else:
                 self.semaphore.release()
 
     def connection_lost(self, session):

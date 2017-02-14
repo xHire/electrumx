@@ -103,6 +103,11 @@ class Peer(object):
         for feature in self.FEATURES:
             setattr(self, feature, getattr(tmp, feature))
 
+    def port_pairs(self):
+        '''Return a list of (kind, port) pairs.'''
+        pairs = (('SSL', self.ssl_port), ('TCP', self.tcp_port))
+        return [pair for pair in pairs if pair[1]]
+
     @cachedproperty
     def is_tor(self):
         return self.host.endswith('.onion')
