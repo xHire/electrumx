@@ -1,3 +1,3 @@
-VERSION = "ElectrumX 0.10.p3"
+VERSION = "ElectrumX 0.10.p4"
 PROTOCOL_MIN = '1.0'
 PROTOCOL_MAX = '1.0'

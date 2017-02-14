@@ -189,7 +189,7 @@ class ElectrumX(SessionBase):
 
     def peers_subscribe(self):
         '''Return the server peers as a list of (ip, host, details) tuples.'''
-        return self.controller.peer_mgr.on_peers_subscribe()
+        return self.controller.peer_mgr.on_peers_subscribe(self.is_tor())
 
     async def address_subscribe(self, address):
         '''Subscribe to an address.
@@ -208,8 +208,9 @@ class ElectrumX(SessionBase):
         '''Returns a dictionary of server features.'''
         return self.controller.peer_mgr.myself.features
 
-    def is_tor_connection(self):
-        '''Attempt to detect if the connection is a tor connection.'''
+    def is_tor(self):
+        '''Try to detect if the connection is to a tor hidden service we are
+        running.'''
         tor_proxy = self.controller.peer_mgr.tor_proxy
         peer_info = self.peer_info()
         return peer_info and peer_info[0] == tor_proxy.ip_addr
@@ -234,7 +235,7 @@ class ElectrumX(SessionBase):
         '''Return the server banner text.'''
         banner = 'Welcome to Electrum!'
 
-        if self.is_tor_connection():
+        if self.is_tor():
             banner_file = self.env.banner_file
         else:
             banner_file = self.env.tor_banner_file

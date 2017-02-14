@@ -235,27 +235,38 @@ class PeerManager(util.LoggedClass):
         self.add_peers(peers, limit=3)
         return bool(peers)
 
-    def on_peers_subscribe(self):
+    def on_peers_subscribe(self, is_tor):
         '''Returns the server peers as a list of (ip, host, details) tuples.
 
         We return all peers we've connected to in the last day.
         Additionally, if we don't have onion routing, we return up to
         three randomly selected onion servers.
         '''
-        buckets = defaultdict(list)
         cutoff = time.time() - STALE_SECS
         recent = [peer for peer in self.peers
                   if peer.last_connect > cutoff and peer.is_public]
-        for peer in recent:
-            buckets[peer.bucket()].append(peer)
+        onion_peers = []
 
-        # Return one clearnet peer from each bucket, and no more than
-        # 20% onion peers (but up to 10 is OK anyway)
-        onion_peers = buckets.pop('onion', self.onion_peers)
-        peers = [random.choice(bpeers) for bpeers in buckets.values()]
-        max_onion = max(10, len(peers) // 4)
+        # Always report ourselves if valid (even if not public)
+        peers = set()
+        if self.myself.last_connect > cutoff:
+            peers.add(self.myself)
+
+        # Bucket the clearnet peers and select one from each
+        buckets = defaultdict(list)
+        for peer in recent:
+            if peer.is_tor:
+                onion_peers.append(peer)
+            else:
+                buckets[peer.bucket()].append(peer)
+        peers.update(random.choice(bpeers) for bpeers in buckets.values())
+
+        # Add up to 20% onion peers (but up to 10 is OK anyway)
+        onion_peers = onion_peers or self.onion_peers
         random.shuffle(onion_peers)
-        peers += onion_peers[:max_onion]
+        max_onion = 50 if is_tor else max(10, len(peers) // 4)
+
+        peers.update(onion_peers[:max_onion])
 
         return [peer.to_tuple() for peer in peers]
 
@@ -284,11 +295,10 @@ class PeerManager(util.LoggedClass):
 
     def import_peers(self):
         '''Import hard-coded peers from a file or the coin defaults.'''
+        self.add_peers([self.myself])
         coin_peers = self.env.coin.PEERS
         self.onion_peers = [Peer.from_real_name(rn, 'coins.py')
                             for rn in coin_peers if '.onion ' in rn]
-        self.logger.info('found {:d} onion peers in lib/coins.py'
-                         .format(len(self.onion_peers)))
 
         # If we don't have many peers in the peers file, add
         # hard-coded ones
@@ -373,17 +383,24 @@ class PeerManager(util.LoggedClass):
         '''Retry peers that are close to getting stale.'''
         # Exponential backoff of retries
         now = time.time()
-        retry_cutoff = (now - STALE_SECS) + WAKEUP_SECS * 2
-        peers = [peer for peer in self.peers
-                 if peer.last_connect < retry_cutoff
-                 and peer.last_try < now - WAKEUP_SECS * 2 ** peer.try_count]
+        nearly_stale_time = (now - STALE_SECS) + WAKEUP_SECS * 2
+
+        def retry_peer(peer):
+            # Retry a good connection if it is about to turn stale
+            if peer.try_count == 0:
+                return peer.last_connect < nearly_stale_time
+            # Retry a failed connection if enough time has passed
+            return peer.last_try < now - WAKEUP_SECS * 2 ** peer.try_count
+
+        peers = [peer for peer in self.peers if retry_peer(peer)]
 
         # If we don't have a tor proxy drop tor peers, but retry
         # occasionally
         if self.tor_proxy.port is None:
             if now < self.last_tor_retry_time + 3600:
                 peers = [peer for peer in peers if not peer.is_tor]
-            self.last_tor_retry_time = now
+            elif any(peer.is_tor for peer in peers):
+                self.last_tor_retry_time = now
 
         for peer in peers:
             await self.semaphore.acquire()

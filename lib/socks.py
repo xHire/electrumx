@@ -107,6 +107,7 @@ class SocksProxy(util.LoggedClass):
         for proxy_port in proxy_ports:
             address = (self.host, proxy_port)
             sock = socket.socket()
+            sock.setblocking(False)
             try:
                 await self.loop.sock_connect(sock, address)
             except OSError as e:
