@@ -226,9 +226,10 @@ def open_truncate(filename):
     return open(filename, 'wb+')
 
 
-def host_port_string(host, port):
-    '''Return a correctly formatted host and port as a string.'''
+def address_string(address):
+    '''Return an address as a correctly formatted string.'''
     fmt = '{}:{:d}'
+    host, port = address
     try:
         host = ip_address(host)
     except ValueError:

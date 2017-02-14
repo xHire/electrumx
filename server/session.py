@@ -7,6 +7,7 @@
 
 '''Classes for local RPC server and remote client TCP/SSL servers.'''
 
+import codecs
 import time
 from functools import partial
 
@@ -120,6 +121,7 @@ class ElectrumX(SessionBase):
             'blockchain.numblocks.subscribe': self.numblocks_subscribe,
             'blockchain.transaction.broadcast': self.transaction_broadcast,
             'server.add_peer': self.add_peer,
+            'server.banner': self.banner,
             'server.features': self.server_features,
             'server.peers.subscribe': self.peers_subscribe,
             'server.version': self.server_version,
@@ -205,6 +207,48 @@ class ElectrumX(SessionBase):
     def server_features(self):
         '''Returns a dictionary of server features.'''
         return self.controller.peer_mgr.myself.features
+
+    def is_tor_connection(self):
+        '''Attempt to detect if the connection is a tor connection.'''
+        tor_proxy = self.controller.peer_mgr.tor_proxy
+        peer_info = self.peer_info()
+        return peer_info and peer_info[0] == tor_proxy.ip_addr
+
+    async def replaced_banner(self, banner):
+        network_info = await self.controller.daemon_request('getnetworkinfo')
+        ni_version = network_info['version']
+        major, minor = divmod(ni_version, 1000000)
+        minor, revision = divmod(minor, 10000)
+        revision //= 100
+        daemon_version = '{:d}.{:d}.{:d}'.format(major, minor, revision)
+        for pair in [
+                ('$VERSION', version.VERSION),
+                ('$DAEMON_VERSION', daemon_version),
+                ('$DAEMON_SUBVERSION', network_info['subversion']),
+                ('$DONATION_ADDRESS', self.env.donation_address),
+        ]:
+            banner = banner.replace(*pair)
+        return banner
+
+    async def banner(self):
+        '''Return the server banner text.'''
+        banner = 'Welcome to Electrum!'
+
+        if self.is_tor_connection():
+            banner_file = self.env.banner_file
+        else:
+            banner_file = self.env.tor_banner_file
+        if banner_file:
+            try:
+                with codecs.open(banner_file, 'r', 'utf-8') as f:
+                    banner = f.read()
+            except Exception as e:
+                self.log_error('reading banner file {}: {}'
+                               .format(banner_file, e))
+            else:
+                banner = await self.replaced_banner(banner)
+
+        return banner
 
     def server_version(self, client_name=None, protocol_version=None):
         '''Returns the server version as a string.

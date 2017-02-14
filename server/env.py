@@ -44,6 +44,8 @@ class Env(LoggedClass):
         self.rpc_port = self.integer('RPC_PORT', 8000)
         self.max_subscriptions = self.integer('MAX_SUBSCRIPTIONS', 10000)
         self.banner_file = self.default('BANNER_FILE', None)
+        self.tor_banner_file = self.default('TOR_BANNER_FILE',
+                                            self.banner_file)
         self.anon_logs = self.default('ANON_LOGS', False)
         self.log_sessions = self.integer('LOG_SESSIONS', 3600)
         # Tor proxy

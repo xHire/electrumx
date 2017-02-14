@@ -154,6 +154,7 @@ class PeerManager(util.LoggedClass):
         # any other peers with the same host name or IP address.
         self.peers = set()
         self.onion_peers = []
+        self.last_tor_retry_time = 0
         self.tor_proxy = SocksProxy(env.tor_proxy_host, env.tor_proxy_port,
                                     loop=self.loop)
         self.import_peers()
@@ -299,7 +300,7 @@ class PeerManager(util.LoggedClass):
 
     def connect_to_irc(self):
         '''Connect to IRC if not disabled.'''
-        if self.env.irc:
+        if self.env.irc and self.env.coin.IRC_PREFIX:
             pairs = [(self.myself.real_name(ident.host), ident.nick_suffix)
                      for ident in self.env.identities]
             self.ensure_future(self.irc.start(pairs))
@@ -378,12 +379,19 @@ class PeerManager(util.LoggedClass):
                  if peer.last_connect < retry_cutoff
                  and peer.last_try < now - WAKEUP_SECS * 2 ** peer.try_count]
 
+        # If we don't have a tor proxy drop tor peers, but retry
+        # occasionally
+        if self.tor_proxy.port is None:
+            if now < self.last_tor_retry_time + 3600:
+                peers = [peer for peer in peers if not peer.is_tor]
+            self.last_tor_retry_time = now
+
         for peer in peers:
             await self.semaphore.acquire()
             self.retry_peer(peer)
 
     def retry_peer(self, peer):
-        if peer.ssl_port and not peer.is_tor:
+        if peer.ssl_port:
             port = peer.ssl_port
             kind = 'SSL'
             # Python 3.5.3: use PROTOCOL_TLS
@@ -391,16 +399,13 @@ class PeerManager(util.LoggedClass):
         else:
             kind = 'TCP'
             port = peer.tcp_port
-            if not port:
-                return
             sslc = None
 
+        assert port
         peer.last_try = time.time()
         peer.try_count += 1
 
         if peer.is_tor:
-            if self.tor_proxy.is_down():
-                return
             create_connection = self.tor_proxy.create_connection
         else:
             create_connection = self.loop.create_connection

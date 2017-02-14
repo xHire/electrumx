@@ -6,7 +6,6 @@
 # and warranty status of this software.
 
 import asyncio
-import codecs
 import json
 import os
 import ssl
@@ -28,7 +27,6 @@ from server.daemon import Daemon, DaemonError
 from server.mempool import MemPool
 from server.peers import PeerManager
 from server.session import LocalRPC, ElectrumX
-from server.version import VERSION
 
 
 class Controller(util.LoggedClass):
@@ -88,8 +86,7 @@ class Controller(util.LoggedClass):
              'address.get_proof address.listunspent '
              'block.get_header block.get_chunk estimatefee relayfee '
              'transaction.get transaction.get_merkle utxo.get_address'),
-            ('server',
-             'banner donation_address'),
+            ('server', 'donation_address'),
         ]
         self.electrumx_handlers = {'.'.join([prefix, suffix]):
                                    getattr(self, suffix.replace('.', '_'))
@@ -913,33 +910,6 @@ class Controller(util.LoggedClass):
         return self.coin.address_from_script(tx.outputs[index].pk_script)
 
     # Client RPC "server" command handlers
-
-    async def banner(self):
-        '''Return the server banner text.'''
-        banner = 'Welcome to Electrum!'
-        if self.env.banner_file:
-            try:
-                with codecs.open(self.env.banner_file, 'r', 'utf-8') as f:
-                    banner = f.read()
-            except Exception as e:
-                self.log_error('reading banner file {}: {}'
-                               .format(self.env.banner_file, e))
-            else:
-                network_info = await self.daemon_request('getnetworkinfo')
-                version = network_info['version']
-                major, minor = divmod(version, 1000000)
-                minor, revision = divmod(minor, 10000)
-                revision //= 100
-                version = '{:d}.{:d}.{:d}'.format(major, minor, revision)
-                for pair in [
-                    ('$VERSION', VERSION),
-                    ('$DAEMON_VERSION', version),
-                    ('$DAEMON_SUBVERSION', network_info['subversion']),
-                    ('$DONATION_ADDRESS', self.env.donation_address),
-                ]:
-                    banner = banner.replace(*pair)
-
-        return banner
 
     def donation_address(self):
         '''Return the donation address as a string, empty if there is none.'''

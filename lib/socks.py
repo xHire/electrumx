@@ -35,132 +35,56 @@ from functools import partial
 
 import lib.util as util
 
-INITIAL, HANDSHAKE, COMPLETED, TIMEDOUT, DISCONNECTED = range(5)
-TIMEOUT_SECS=10
-MSGS = {
-    TIMEDOUT: 'proxy server timed out',
-    DISCONNECTED: 'proxy server disconnected during handshake',
-}
 
-class SocksProtocol(util.LoggedClass, asyncio.Protocol):
+class Socks(util.LoggedClass):
     '''Socks protocol wrapper.'''
 
     class Error(Exception):
         pass
 
-    def __init__(self, loop):
+    def __init__(self, loop, sock, host, port):
         super().__init__()
         self.loop = loop
-        self.data = b''
-        self.transport = None
-        self.event = asyncio.Event()
-        self.state = INITIAL
+        self.sock = sock
+        self.host = host
+        self.port = port
+        try:
+            self.ip_address = ipaddress.ip_address(host)
+        except ValueError:
+            self.ip_address = None
         self.debug = False
 
-    def connection_made(self, transport):
-        '''Handle connection to the proxy.'''
-        self.transport = transport
-
-    def connection_lost(self, exc):
-        '''Handle disconnection from the proxy.'''
-        self.state = DISCONNECTED
-        self.event.set()
-
-    def data_received(self, data):
-        if self.debug:
-            self.log_info('{:d} bytes received: {}'.format(len(data), data))
-        self.data += data
-        self.event.set()
-
-    def close(self):
-        self.transport.close()
-
-    def timedout(self):
-        self.state = TIMEDOUT
-        self.event.set()
-
-    async def wait(self, send_data, length):
-        '''Wait for length bytes to come in, and return them.
-
-        Optionally send some data first.
-        '''
-        if send_data:
-            self.transport.write(send_data)
-
-        while len(self.data) < length:
-            timeout = self.loop.call_later(TIMEOUT_SECS, self.timedout)
-            await self.event.wait()
-            self.event.clear()
-            timeout.cancel()
-            if self.state in MSGS:
-                raise self.Error(MSGS[self.state])
-
-        result = self.data[:length]
-        self.data = self.data[length:]
-        return result
-
-    async def handshake(self, host, port):
-        '''Write the proxy handshake sequence.'''
-        try:
-            assert self.state == INITIAL
-            self.state = HANDSHAKE
-
-            if not isinstance(host, str):
-                raise self.Error('host must be a string not {}'
-                                 .format(type(host)))
-
-            dest = util.host_port_string(host, port)
-            socks_handshake = self._socks4_handshake
-            try:
-                host = ipaddress.ip_address(host)
-                if host.version == 6:
-                    socks_handshake = self._socks5_handshake
-            except ValueError:
-                pass
-
-            result = await socks_handshake(host, port)
-            if self.debug:
-                self.log_info('successful proxy connection to {}'.format(dest))
-            return result
-        finally:
-            if self.state != COMPLETED:
-                self.close()
-
-    async def _socks4_handshake(self, host, port):
-        if isinstance(host, ipaddress.IPv4Address):
+    async def _socks4_handshake(self):
+        if self.ip_address:
             # Socks 4
-            ip_addr = host
+            ip_addr = self.ip_address
             host_bytes = b''
         else:
             # Socks 4a
             ip_addr = ipaddress.ip_address('0.0.0.1')
-            host_bytes = host.encode() + b'\0'
+            host_bytes = self.host.encode() + b'\0'
 
         user_id = ''
-        data = b'\4\1' + struct.pack('>H', port) + ip_addr.packed
+        data = b'\4\1' + struct.pack('>H', self.port) + ip_addr.packed
         data += user_id.encode() + b'\0' + host_bytes
-        data = await self.wait(data, 8)
-
+        await self.loop.sock_sendall(self.sock, data)
+        data = await self.loop.sock_recv(self.sock, 8)
         if data[0] != 0:
             raise self.Error('proxy sent bad initial byte')
         if data[1] != 0x5a:
             raise self.Error('proxy request failed or rejected')
-        self.state = COMPLETED
 
-    def forward_to_protocol(self, protocol_factory):
-        '''Forward the connection to the underlying protocol.'''
-        if self.state != COMPLETED:
-            raise self.Error('cannot forward if handshake is not complete')
+    async def handshake(self):
+        '''Write the proxy handshake sequence.'''
+        if self.ip_address and self.ip_address.version == 6:
+            await self._socks5_handshake()
+        else:
+            await self._socks4_handshake()
 
-        protocol = protocol_factory()
-        for attr in ('connection_lost', 'data_received',
-                     'pause_writing', 'resume_writing', 'eof_received'):
-            setattr(self, attr, getattr(protocol, attr))
-        protocol.connection_made(self.transport)
-        if self.data:
-            protocol.data_received(self.data)
-            self.data = b''
-        return self.transport, protocol
+        if self.debug:
+            address = (self.host, self.port)
+            self.log_info('successful connection via proxy to {}'
+                          .format(util.address_string(address)))
 
 
 class SocksProxy(util.LoggedClass):
@@ -170,33 +94,40 @@ class SocksProxy(util.LoggedClass):
         super().__init__()
         self.host = host
         self.port = port
+        self.ip_addr = None
         self.loop = loop or asyncio.get_event_loop()
-
-    def is_down(self):
-        return self.port == 0
 
     async def create_connection(self, protocol_factory, host, port, ssl=None):
         '''All arguments are as to asyncio's create_connection method.'''
         if self.port is None:
-            ports = [9050, 9150, 1080]
+            proxy_ports = [9050, 9150, 1080]
         else:
-            ports = [self.port]
+            proxy_ports = [self.port]
 
-        socks_factory = partial(SocksProtocol, self.loop)
-        for proxy_port in ports:
+        for proxy_port in proxy_ports:
+            address = (self.host, proxy_port)
+            sock = socket.socket()
             try:
-                transport, socks = await self.loop.create_connection(
-                    socks_factory, host=self.host, port=proxy_port)
-                break
-            except OSError:
-                if proxy_port == ports[-1]:
-                    self.port = self.port or 0
+                await self.loop.sock_connect(sock, address)
+            except OSError as e:
+                if proxy_port == proxy_ports[-1]:
                     raise
+                continue
 
-        if self.port is None:
-            self.port = proxy_port
-            hps = util.host_port_string(self.host, proxy_port)
-            self.logger.info('detected proxy at {}'.format(hps))
+            socks = Socks(self.loop, sock, host, port)
+            try:
+                await socks.handshake()
+                if self.port is None:
+                    self.ip_addr = sock.getpeername()[0]
+                    self.port = proxy_port
+                    self.logger.info('detected proxy at {} ({})'
+                                     .format(util.address_string(address),
+                                             self.ip_addr))
+                break
+            except Exception as e:
+                sock.close()
+                raise
 
-        await socks.handshake(host, port)
-        return socks.forward_to_protocol(protocol_factory)
+        hostname = host if ssl else None
+        return await self.loop.create_connection(
+            protocol_factory, ssl=ssl, sock=sock, server_hostname=hostname)

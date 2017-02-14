@@ -55,6 +55,7 @@ class Coin(object):
     RPC_URL_REGEX = re.compile('.+@[^:]+(:[0-9]+)?')
     VALUE_PER_COIN = 100000000
     CHUNK_SIZE = 2016
+    IRC_PREFIX = None
     IRC_SERVER = "irc.freenode.net"
     IRC_PORT = 6667
     HASHX_LEN = 11
@@ -68,7 +69,7 @@ class Coin(object):
 
         Raise an exception if unrecognised.'''
         req_attrs = ('TX_COUNT', 'TX_COUNT_HEIGHT', 'TX_PER_BLOCK',
-                     'IRC_CHANNEL', 'IRC_PREFIX')
+                     'IRC_CHANNEL')
         for coin in util.subclasses(Coin):
             if (coin.NAME.lower() == name.lower()
                     and coin.NET.lower() == net.lower()):
@@ -334,7 +335,6 @@ class BitcoinTestnet(Bitcoin):
     TX_COUNT = 12242438
     TX_COUNT_HEIGHT = 1035428
     TX_PER_BLOCK = 21
-    IRC_PREFIX = "ET_"
     RPC_PORT = 18332
     PEER_DEFAULT_PORTS = {'t': '51001', 's': '51002'}
     PEERS = [
@@ -342,7 +342,7 @@ class BitcoinTestnet(Bitcoin):
         'he36kyperp3kbuxu.onion s t',
         'electrum-btc-testnet.petrkr.net s t',
         'testnet.hsmiths.com t53011 s53012',
-        'hsmithsxurybd7uh.onion t53011',
+        'hsmithsxurybd7uh.onion t53011 s53012',
         'testnet.not.fyi s t',
     ]
 

@@ -122,6 +122,11 @@ These environment variables are optional:
   + **$DONATION_ADDRESS** is replaced with the address from the
     **DONATION_ADDRESS** environment variable.
 
+* **TOR_BANNER_FILE**
+
+  As for **BANNER_FILE** (which is also the default) but shown to
+  incoming connections believed to be to your Tor hidden service.
+
 * **ANON_LOGS**
 
   Set to anything non-empty to replace IP addresses in logs with
