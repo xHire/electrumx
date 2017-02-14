@@ -286,6 +286,11 @@ connectivity on IRC:
   unless it is '0', otherwise **SSL_PORT**.  '0' disables publishing
   the port.
 
+  **NOTE**: Certificate-Authority signed certificates don't work over
+  Tor, so you should set **REPORT_SSL_PORT_TOR** to 0 if yours is not
+  self-signed.
+
+
 Cache
 -----
 

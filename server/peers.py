@@ -379,6 +379,11 @@ class PeerManager(util.LoggedClass):
         finally:
             self.write_peers_file()
 
+    def is_coin_onion_peer(self, peer):
+        '''Return true if this peer is a hard-coded onion peer.'''
+        return peer.is_tor and any(peer.host in real_name
+                                   for real_name in self.env.coin.PEERS)
+
     async def retry_peers(self):
         '''Retry peers that are close to getting stale.'''
         # Exponential backoff of retries
@@ -386,6 +391,10 @@ class PeerManager(util.LoggedClass):
         nearly_stale_time = (now - STALE_SECS) + WAKEUP_SECS * 2
 
         def retry_peer(peer):
+            # Try some Tor at startup to determine the proxy so we can
+            # serve the right banner file
+            if self.last_tor_retry_time == 0 and self.is_coin_onion_peer(peer):
+                return True
             # Retry a good connection if it is about to turn stale
             if peer.try_count == 0:
                 return peer.last_connect < nearly_stale_time
@@ -453,4 +462,5 @@ class PeerManager(util.LoggedClass):
                           .format(peer, session.kind))
         else:
             self.log_info('peer {} verified via {} at {}'
-                          .format(peer, session.kind, peer.ip_addr))
+                          .format(peer, session.kind,
+                                  session.peer_addr(anon=False)))

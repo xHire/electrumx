@@ -236,9 +236,9 @@ class ElectrumX(SessionBase):
         banner = 'Welcome to Electrum!'
 
         if self.is_tor():
-            banner_file = self.env.banner_file
-        else:
             banner_file = self.env.tor_banner_file
+        else:
+            banner_file = self.env.banner_file
         if banner_file:
             try:
                 with codecs.open(banner_file, 'r', 'utf-8') as f:

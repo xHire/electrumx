@@ -324,6 +324,7 @@ class Bitcoin(Coin):
 class BitcoinTestnet(Bitcoin):
     SHORTNAME = "XTN"
     NET = "testnet"
+    IRC_PREFIX = None
     XPUB_VERBYTES = bytes.fromhex("043587cf")
     XPRV_VERBYTES = bytes.fromhex("04358394")
     P2PKH_VERBYTE = 0x6f
@@ -341,7 +342,7 @@ class BitcoinTestnet(Bitcoin):
         'electrum.akinbo.org s t',
         'he36kyperp3kbuxu.onion s t',
         'electrum-btc-testnet.petrkr.net s t',
-        'testnet.hsmiths.com t53011 s53012',
+        'testnet.hsmiths.com t53011',
         'hsmithsxurybd7uh.onion t53011 s53012',
         'testnet.not.fyi s t',
     ]
