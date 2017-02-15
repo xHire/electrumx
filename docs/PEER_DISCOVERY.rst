@@ -50,7 +50,7 @@ servers, in preference to a hard-coded list of peer servers in the
 client, which it will fall back to if necessary.
 
 The server should craft its response in a way that reduces the
-effectiveness of sybil attacks and spamming of hosts.
+effectiveness of sybil attacks and peer spamming.
 
 The response should only include peers it has successfully connected
 to recently.  If Tor routing is not available, so their existence
@@ -61,9 +61,9 @@ Only reporting recent good peers ensures that those that have gone
 offline will not be passed around for long (ignoring for hard-coded
 onion peer exception).
 
-In ElectrumX, "recently" is taken to be the last 24 hours.  No more
-than 5 onion peers are returned, and only one peer from each IPv4
-/16 netmask is returned.
+In ElectrumX, "recently" is taken to be the last 24 hours.  Only one
+peer from each IPv4/16 netmask is returned, and the number of onion
+peers is limited.
 
 
 Maintaining the Peer Database
@@ -71,29 +71,42 @@ Maintaining the Peer Database
 
 In order to keep its peer database up-to-date and fresh, if some time
 has passed since the last successful connection to a peer, an Electrum
-server should make an attempt to connect, choosing the TCP or SSL port
-at random if both are available.  On connecting it should issue
-**server.peers.subscribe** and **server.features** RPC calls to
-collect information about the server and its peers, and issue a
-**server.add_peer** call to advertise itself.  Once this is done and
-replies received it should terminate the connection.
+server should make an attempt to connect, choosing either the TCP or
+SSL port.  On connecting it should issue **server.peers.subscribe**
+and **server.features** RPC calls to collect information about the
+server and its peers, and if it is the first time connecting to this
+peer, a **server.add_peer** call to advertise itself.  Once this is
+done and replies received it should terminate the connection.
 
-The peer database should prefer information obtained from an outgoing
-connection to the peer itself over information obtained from any other
-source.
+The peer database should view information obtained from an outgoing
+connection as authoritative, and prefer it to information obtained
+from any other source.
 
-If a connection attempt fails, reconnection should follow some kind of
-exponential backoff.
+On connecting, a server should confirm the peer is serving the same
+network, ideally via the genesis block hash of the **server.features**
+RPC call below.  If the peer does not implement that call, perhaps
+instead check the **blockchain.headers.subscribe** RPC call returns a
+peer block height within a small number of the expected value.  If a
+peer is on the wrong network it should never be advertised to clients
+or other peers.  Such invalid peers should perhaps be remembered for a
+short time to prevent redundant revalidation if other peers persist in
+advertising them, and later forgotten.
 
-If a long period of time has elapsed since the successful connection
-attempt, the peer entry should be removed from the database.  This
-ensures that all peers that have gone offline will eventually be
-forgotten by the network entirely.
+If a connection attempt fails, subsequent reconnection attempts should
+follow some kind of exponential backoff.
 
-ElectrumX will choose the SSL port most of the time if both ports are
-available.  It tries to reconnect to each peer once every 24 hours and
-forgets a peer entirely if two weeks have passed since a successful
-connection.
+If a long period of time has elapsed since the last successful
+connection attempt, the peer entry should be removed from the
+database.  This ensures that all peers that have gone offline will
+eventually be forgotten by the network entirely.
+
+ElectrumX will connect to the SSL port if both ports are available.
+If that fails it will fall back to the TCP port.  It tries to
+reconnect to a good peer at least once every 24 hours, and a failing
+after 5 minutes but with exponential backoff.  It forgets a peer
+entirely if two weeks have passed since a successful connection.
+ElectrumX attempts to connect to onion peers through a Tor proxy that
+can be configured or that it will try to autodetect.
 
 
 server.features RPC call
@@ -108,7 +121,8 @@ The call takes no arguments and returns a dictionary keyed by feature
 name whose value gives details about the feature where appropriate.
 If a key is missing the feature is presumed not to be offered.
 
-Currently ElectrumX understands and returns the following keys:
+Currently ElectrumX understands and returns the following keys.
+Unknown keys should be silently ignored.
 
 * **hosts**
 
@@ -132,17 +146,24 @@ Currently ElectrumX understands and returns the following keys:
   A server should ignore information provided about any host other
   than the one it connected to.
 
+* **genesis_hash**
+
+  The hash of the genesis block.  This is used to detect if a peer is
+  connected to one serving a different network.
+
 * **server_version**
 
   A string that identifies the server software.  Should be the same as
   the response to **server.version** RPC call.
 
-* **protocol_version**
+* **protocol_max**
+* **protocol_min**
 
-  A string that is the Electrum protcol version.  Should be the same
-  as what would suffix the letter **v** in the IRC real name.
+  Strings that are the minimum and maximum Electrum protcol versions
+  this server speaks.  Should be the same as what would suffix the
+  letter **v** in the IRC real name.  Example: "1.1".
 
-* **pruning**
+ **pruning**
 
   An integer, the pruning limit.  Omit or set to *null* if there is no
   pruning limit.  Should be the same as what would suffix the letter
@@ -174,6 +195,8 @@ IRC
 
 Other server implementations may not have implemented the peer
 discovery protocol yet.  Whilst we transition away from IRC, in order
-to keep these servers in the connected peer set, software implementing
-this protocol should provide a way to occasionally connect to IRC to
-pick up stragglers only advertising themselves there.
+to keep these servers in the connected peer set, having one or two in
+the hard-coded peer list used to seed this process should suffice.
+Any peer on IRC will report other peers on IRC, and so if any one of
+them is known to any single peer implementing this protocol, they will
+all become known to all peers quite rapidly.

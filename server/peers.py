@@ -24,9 +24,9 @@ import server.version as version
 
 
 PEERS_FILE = 'peers'
-PEER_GOOD, PEER_STALE, PEER_NEVER = range(3)
-FORGET_SECS = 14 * 86400
-STALE_SECS = 86400
+PEER_GOOD, PEER_STALE, PEER_NEVER, PEER_BAD = range(4)
+FORGET_SECS = 86400 #14 * 86400
+STALE_SECS = 86400 / 4 #86400
 WAKEUP_SECS = 300
 
 
@@ -38,8 +38,6 @@ def peer_from_env(env):
              for identity in env.identities}
     features = {
         'hosts': hosts,
-        'ssl_port': main_identity.ssl_port,
-        'tcp_port': main_identity.tcp_port,
         'pruning': None,
         'server_version': version.VERSION,
         'protocol_min': version.PROTOCOL_MIN,
@@ -105,9 +103,43 @@ class PeerSession(JSONSession):
         self.close_if_done()
 
     def on_features(self, features, error):
-        # Several peers don't implement this.
-        if not error:
-            self.peer.update_features(features)
+        # Several peers don't implement this.  If they do, check they are
+        # the same network with the genesis hash.
+        verified = False
+        if not error and isinstance(features, dict):
+            forget = False
+            our_hash = self.peer_mgr.env.coin.GENESIS_HASH
+            their_hash = features.get('genesis_hash')
+            if their_hash:
+                verified = their_hash == our_hash
+                forget = their_hash != our_hash
+            if forget:
+                self.failed = True
+                self.peer.mark_bad()
+                self.log_warning('peer {} has incorrect genesis hash'
+                                 .format(self.peer))
+            else:
+                self.peer.update_features(features)
+        # For legacy peers not implementing features, check their height
+        # as a proxy to determining they're on our network
+        if not verified:
+            self.send_request(self.on_headers, 'blockchain.headers.subscribe')
+        self.close_if_done()
+
+    def on_headers(self, result, error):
+        '''Handle the response to the version message.'''
+        if error or not isinstance(result, dict):
+            self.failed = True
+            self.log_error('headers.subscribe: {} {}'.format(result, error))
+        else:
+            our_height = self.peer_mgr.controller.bp.db_height
+            their_height = result.get('block_height')
+            if (not isinstance(their_height, int) or
+                   abs(our_height - their_height) > 5):
+                self.failed = True
+                self.peer.mark_bad()
+                self.log_warning('peer {} has bad height {}'
+                                 .format(self.peer, their_height))
         self.close_if_done()
 
     def on_version(self, result, error):
@@ -122,11 +154,17 @@ class PeerSession(JSONSession):
 
     def close_if_done(self):
         if not self.has_pending_requests():
+            is_good = not self.failed
             self.peer.last_connect = time.time()
-            if not self.failed:
-                self.peer.try_count = 0
-                self.peer.source = 'peer'
-                self.peer_mgr.verified_connection(self)
+            self.peer_mgr.set_connection_status(self.peer, is_good)
+            if is_good:
+                if self.peer.is_tor:
+                    self.log_info('peer {} verified via {} over Tor'
+                                  .format(self.peer, self.kind))
+                else:
+                    self.log_info('peer {} verified via {} at {}'
+                                  .format(self.peer, self.kind,
+                                          self.peer_addr(anon=False)))
             self.close_connection()
 
 
@@ -161,38 +199,43 @@ class PeerManager(util.LoggedClass):
 
     def info(self):
         '''The number of peers.'''
-        counter = Counter(self.peer_statuses())
+        self.set_peer_statuses()
+        counter = Counter(peer.status for peer in self.peers)
         return {
+            'bad': counter[PEER_BAD],
             'current': counter[PEER_GOOD],
             'never': counter[PEER_NEVER],
             'stale': counter[PEER_STALE],
             'total': len(self.peers),
         }
 
-    def peer_statuses(self):
-        '''Return a list of peer statuses.'''
+    def set_peer_statuses(self):
+        '''Set peer statuses.'''
         cutoff = time.time() - STALE_SECS
-        def peer_status(peer):
-            if peer.last_connect > cutoff:
-                return PEER_GOOD
+        for peer in self.peers:
+            if peer.bad:
+                peer.status = PEER_BAD
+            elif peer.last_connect > cutoff:
+                peer.status = PEER_GOOD
             elif peer.last_connect:
-                return PEER_STALE
+                peer.status = PEER_STALE
             else:
-                return PEER_NEVER
-
-        return [peer_status(peer) for peer in self.peers]
+                peer.status = PEER_NEVER
 
     def rpc_data(self):
         '''Peer data for the peers RPC method.'''
-        descs = ['good', 'stale', 'never']
+        self.set_peer_statuses()
 
-        def peer_data(peer, status):
+        descs = ['good', 'stale', 'never', 'bad']
+        def peer_data( peer):
             data = peer.serialize()
-            data['status'] = descs[status]
+            data['status'] = descs[peer.status]
             return data
 
-        return [peer_data(peer, status) for peer, status
-                in zip(self.peers, self.peer_statuses())]
+        def peer_key(peer):
+            return (peer.bad, -peer.last_connect)
+
+        return [peer_data(peer) for peer in sorted(self.peers, key=peer_key)]
 
     def matches(self, peer):
         '''Return peers whose host matches the given peer's host or IP
@@ -271,7 +314,8 @@ class PeerManager(util.LoggedClass):
         return [peer.to_tuple() for peer in peers]
 
     def serialize(self):
-        serialized_peers = [peer.serialize() for peer in self.peers]
+        serialized_peers = [peer.serialize() for peer in self.peers
+                            if not peer.bad]
         data = (1, serialized_peers)  # version 1
         return repr(data)
 
@@ -341,24 +385,6 @@ class PeerManager(util.LoggedClass):
         '''Schedule the coro to be run.'''
         return self.controller.ensure_future(coro, callback=callback)
 
-    def forget_unreachable_peers(self):
-        '''Forget unreachable peers.'''
-        now = time.time()
-        hour_ago = now - 3600
-        forget_time = now - FORGET_SECS
-
-        def is_unreachable(peer):
-            if peer.last_try > hour_ago and peer.last_connect < forget_time:
-                if peer.try_count >= (10 if peer.last_connect else 5):
-                    return True
-            return not peer.port_pairs()
-
-        peers = [peer for peer in self.peers if is_unreachable(peer)]
-        if peers:
-            self.logger.info('forgetting unreachable peers: {}'
-                             .format(', '.join(str(peer) for peer in peers)))
-            self.peers.difference_update(peers)
-
     async def main_loop(self):
         '''Main loop performing peer maintenance.  This includes
 
@@ -374,7 +400,6 @@ class PeerManager(util.LoggedClass):
                 await self.retry_event.wait()
                 self.retry_event.clear()
                 timeout.cancel()
-                self.forget_unreachable_peers()
                 await self.retry_peers()
         finally:
             self.write_peers_file()
@@ -412,15 +437,19 @@ class PeerManager(util.LoggedClass):
                 self.last_tor_retry_time = now
 
         for peer in peers:
-            await self.semaphore.acquire()
-            self.retry_peer(peer, peer.port_pairs())
+            peer.last_try = now
+            peer.try_count += 1
+            pairs = peer.port_pairs()
+            if peer.bad or not pairs:
+                self.maybe_forget_peer(peer)
+            else:
+                await self.semaphore.acquire()
+                self.retry_peer(peer, pairs)
 
     def retry_peer(self, peer, port_pairs):
         kind, port = port_pairs[0]
         # Python 3.5.3: use PROTOCOL_TLS
         sslc = ssl.SSLContext(ssl.PROTOCOL_SSLv23) if kind == 'SSL' else None
-        peer.last_try = time.time()
-        peer.try_count += 1
 
         if peer.is_tor:
             create_connection = self.tor_proxy.create_connection
@@ -447,20 +476,35 @@ class PeerManager(util.LoggedClass):
             if port_pairs:
                 self.retry_peer(peer, port_pairs)
             else:
+                self.set_connection_status(peer, False)
                 self.semaphore.release()
 
     def connection_lost(self, session):
         '''Called by the peer session when disconnected.'''
         self.semaphore.release()
 
-    def verified_connection(self, session):
-        '''Called by the peer session if a connection was verified.'''
-        peer = session.peer
-        self.remove_matches(peer)
-        if peer.is_tor:
-            self.log_info('peer {} verified via {} over Tor'
-                          .format(peer, session.kind))
+    def set_connection_status(self, peer, good):
+        '''Called when a connection succeeded or failed.'''
+        if good:
+            peer.try_count = 0
+            peer.source = 'peer'
+            self.remove_matches(peer)
         else:
-            self.log_info('peer {} verified via {} at {}'
-                          .format(peer, session.kind,
-                                  session.peer_addr(anon=False)))
+            self.maybe_forget_peer(peer)
+
+    def maybe_forget_peer(self, peer):
+        '''Forget the peer if appropriate, e.g. long-term unreachable.'''
+        now = time.time()
+        forget = False
+        if peer.bad:
+            forget = peer.last_connect < now - 2 * STALE_SECS
+        elif peer.last_connect < now - FORGET_SECS:
+            try_limit = 10 if peer.last_connect else 5
+            forget = peer.try_count >= try_limit
+
+        if forget:
+            desc = 'bad' if peer.bad else 'unreachable'
+            self.logger.info('forgetting {} peer: {}'.format(desc, peer))
+            self.peers.discard(peer)
+
+        return forget

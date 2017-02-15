@@ -65,6 +65,7 @@ class Peer(object):
         self.try_count = try_count
         # Transient, non-persisted metadata
         self.announced = False
+        self.bad = False
 
     @classmethod
     def peers_from_features(cls, features, source):
@@ -107,6 +108,11 @@ class Peer(object):
         '''Return a list of (kind, port) pairs.'''
         pairs = (('SSL', self.ssl_port), ('TCP', self.tcp_port))
         return [pair for pair in pairs if pair[1]]
+
+    def mark_bad(self):
+        '''Mark as bad to avoid reconnects but also to remember for a
+        while.'''
+        self.bad = True
 
     @cachedproperty
     def is_tor(self):
