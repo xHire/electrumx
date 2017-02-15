@@ -39,6 +39,17 @@ import lib.util as util
 class Socks(util.LoggedClass):
     '''Socks protocol wrapper.'''
 
+    SOCKS5_ERRORS = {
+        1: 'general SOCKS server failure',
+        2: 'connection not allowed by ruleset',
+        3: 'network unreachable',
+        4: 'host unreachable',
+        5: 'connection refused',
+        6: 'TTL expired',
+        7: 'command not supported',
+        8: 'address type not supported',
+    }
+
     class Error(Exception):
         pass
 
@@ -70,9 +81,45 @@ class Socks(util.LoggedClass):
         await self.loop.sock_sendall(self.sock, data)
         data = await self.loop.sock_recv(self.sock, 8)
         if data[0] != 0:
-            raise self.Error('proxy sent bad initial byte')
+            raise self.Error('proxy sent bad initial Socks4 byte')
         if data[1] != 0x5a:
             raise self.Error('proxy request failed or rejected')
+
+    async def _socks5_handshake(self):
+        await self.loop.sock_sendall(self.sock, b'\5\1\0')
+        data = await self.loop.sock_recv(self.sock, 2)
+        if data[0] != 5:
+            raise self.Error('proxy sent bad SOCKS5 initial byte')
+        if data[1] != 0:
+            raise self.Error('proxy rejected SOCKS5 authentication method')
+
+        if self.ip_address:
+            if self.ip_address.version == 4:
+                addr = b'\1' + self.ip_address.packed
+            else:
+                addr = b'\4' + self.ip_address.packed
+        else:
+            host = self.host.encode()
+            addr = b'\3' + bytes([len(host)]) + host
+
+        data = b'\5\1\0' + addr + struct.pack('>H', self.port)
+        await self.loop.sock_sendall(self.sock, data)
+        data = await self.loop.sock_recv(self.sock, 5)
+        if data[0] != 5:
+            raise self.Error('proxy sent bad SOSCK5 response initial byte')
+        if data[1] != 0:
+            msg = self.SOCKS5_ERRORS.get(data[1], 'unknown SOCKS5 error {:d}'
+                                         .format(data[1]))
+            raise self.Error(msg)
+        if data[3] == 1:
+            addr_len, data = 3, data[4:]
+        elif data[3] == 3:
+            addr_len, data = data[4], b''
+        elif data[3] == 4:
+            addr_len, data = 15, data[4:]
+        data = await self.loop.sock_recv(self.sock, addr_len + 2)
+        addr = data[:addr_len]
+        port, = struct.unpack('>H', data[-2:])
 
     async def handshake(self):
         '''Write the proxy handshake sequence.'''
