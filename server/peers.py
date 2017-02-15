@@ -287,7 +287,8 @@ class PeerManager(util.LoggedClass):
         '''
         cutoff = time.time() - STALE_SECS
         recent = [peer for peer in self.peers
-                  if peer.last_connect > cutoff and peer.is_public]
+                  if peer.last_connect > cutoff
+                  and not peer.bad and peer.is_public]
         onion_peers = []
 
         # Always report ourselves if valid (even if not public)
